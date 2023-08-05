@@ -1,0 +1,149 @@
+#!/bin/env python
+
+import os
+import sys
+import subprocess
+import tomllib
+from pathlib import Path
+
+from contextlib import contextmanager
+
+MAKE = os.environ.get("MAKE", "make")
+
+
+@contextmanager
+def cd(new_dir):
+    # Save the current working directory
+    old_dir = os.getcwd()
+
+    try:
+        # Change the current working directory to the new_dir
+        os.chdir(new_dir)
+        yield
+    finally:
+        # Change back to the original working directory after the block is executed
+        os.chdir(old_dir)
+
+
+def fetch_grammar(path, grammar):
+    if path.exists():
+        print(f"{grammar['name']} exists")
+        return
+
+    os.mkdir(path)
+    with cd(path):
+        print(f"fetch {grammar['name']}")
+        # make a new blank repository in the current directory
+        subprocess.run(["git", "init"], check=True)
+
+        # add a remote
+        subprocess.run(
+            ["git", "remote", "add", "origin", grammar["source"]["git"]], check=True
+        )
+
+        # fetch a commit (or branch or tag) of interest
+        # Note: the full history up to this commit will be retrieved unless
+        #       you limit it with '--depth=...' or '--shallow-since=...'
+        #  git fetch origin <sha1-of-commit-of-interest>
+        subprocess.run(
+            ["git", "fetch", "origin", "--depth=1", grammar["source"]["rev"]],
+            check=True,
+        )
+
+        # reset this repository's master branch to the commit of interest
+        #  git reset --hard FETCH_HEAD
+        subprocess.run(["git", "reset", "--hard", "FETCH_HEAD"], check=True)
+
+
+def build_grammar(path, grammar):
+    header_path = path  # TODO: run in this dir
+    parser_path = path / "parser.c"
+    scanner_path = path / "scanner.c"
+    parser_lib_path = Path("runtime") / "grammars"
+    library_path = parser_lib_path / f"{grammar['name']}.so"
+
+    print(library_path)
+    subpath = Path(grammar["source"].get("subpath", ".")) / "src"
+    makefile = Path("Makefile").absolute()
+    subprocess.run(
+        [MAKE, "-C", path / subpath, "-f", makefile, "-j2", f"NAME={library_path.absolute()}"],
+        check=True,
+    )
+
+
+def clean_grammar(path, grammar):
+    parser_lib_path = Path("runtime") / "grammars"
+    library_path = parser_lib_path / f"{grammar['name']}.so"
+
+    subpath = Path(grammar["source"].get("subpath", ".")) / "src"
+    makefile = Path("Makefile").absolute()
+    subprocess.run(
+        [
+            MAKE,
+            "-C",
+            path / subpath,
+            "-f",
+            makefile,
+            "-j",
+            "2",
+            "clean",
+            f"NAME={library_path.absolute()}",
+        ],
+        check=True,
+    )
+
+
+grammar_dir = Path("grammars")
+parser_lib_path = Path("runtime") / "grammars"
+
+
+def fetch_grammars():
+    if not grammar_dir.exists():
+        os.mkdir(grammar_dir)
+
+    with open("languages.toml", "rb") as f:
+        langs = tomllib.load(f)
+        grammars = langs["grammar"]
+
+        for grammar in grammars:
+            fetch_grammar(grammar_dir / grammar["name"], grammar)
+
+
+def build_grammars():
+    if not parser_lib_path.exists():
+        os.mkdir(parser_lib_path)
+
+    with open("languages.toml", "rb") as f:
+        langs = tomllib.load(f)
+        grammars = langs["grammar"]
+
+        # build
+        for grammar in grammars:
+            build_grammar(grammar_dir / grammar["name"], grammar)
+
+
+def clean_grammars():
+    with open("languages.toml", "rb") as f:
+        langs = tomllib.load(f)
+        grammars = langs["grammar"]
+
+        # clean
+        for grammar in grammars:
+            clean_grammar(grammar_dir / grammar["name"], grammar)
+
+
+if len(sys.argv) < 2:
+    print("No command-line arguments provided. Supply one of fetch, build, clean")
+    exit(1)
+
+action = sys.argv[1]
+match action:
+    case "fetch":
+        fetch_grammars()
+    case "build":
+        build_grammars()
+    case "clean":
+        clean_grammars()
+    case _:
+        print("Unknown action {action}")
+        exit(1)
